@@ -1,66 +1,81 @@
-# Django
+from flask import Flask, render_template, request, jsonify
+import requests
+import json
+import os
 
-[![1-click-deploy](https://raw.githubusercontent.com/DefangLabs/defang-assets/main/Logos/Buttons/SVG/deploy-with-defang.svg)](https://portal.defang.dev/redirect?url=https%3A%2F%2Fgithub.com%2Fnew%3Ftemplate_name%3Dsample-django-template%26template_owner%3DDefangSamples)
+app = Flask(__name__)
 
-This sample is a simple Django to-do app that uses SQLite as the database, which will be reset every time you deploy. **It is not production-ready**. For production use cases, you should check out the Django + Postgres sample.
+# Store chat messages in memory (in production, use a database)
+messages = []
 
-The app includes a management command which is run on startup to create a superuser with the username `admin` and password `admin`. This means you can login to the admin interface at `/admin/` and see the Django admin interface without any additional steps. The `example_app` is already registered and the `Todo` model is already set up to be managed in the admin interface.
+@app.route('/')
+def index():
+    return render_template('index.html')
 
-The Dockerfile and compose files are already set up for you and are ready to be deployed. Serving is done using [Gunicorn](https://gunicorn.org/) and uses [WhiteNoise](https://whitenoise.readthedocs.io/en/latest/) for static files. The `CSRF_TRUSTED_ORIGINS` setting is configured to allow the app to run on a `defang.dev` subdomain.
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    try:
+        data = request.get_json()
+        user_message = data.get('message', '')
 
-## Prerequisites
+        if not user_message.strip():
+            return jsonify({'error': 'Empty message'}), 400
 
-1. Download [Defang CLI](https://github.com/DefangLabs/defang)
-2. (Optional) If you are using [Defang BYOC](https://docs.defang.io/docs/concepts/defang-byoc) authenticate with your cloud provider account
-3. (Optional for local development) [Docker CLI](https://docs.docker.com/engine/install/)
+        # Add user message to history
+        messages.append({'role': 'user', 'content': user_message})
 
-## Development
+        # Call Gemini API
+        api_key = "AIzaSyAISWb5xwoEIoKyxR9jd5VrqfwmDCt7Qcw"
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
 
-To run the application locally, you can use the following command:
+        # Prepare chat history for Gemini API
+        contents = []
+        for msg in messages:
+            if msg['role'] == 'user':
+                contents.append({'role': 'user', 'parts': [{'text': msg['content']}]})
+            else:
+                contents.append({'role': 'model', 'parts': [{'text': msg['content']}]})
 
-```bash
-docker compose up --build
-```
+        payload = {'contents': contents}
 
-## Configuration
+        response = requests.post(
+            api_url,
+            headers={'Content-Type': 'application/json'},
+            json=payload
+        )
 
-For this sample, you will not need to provide [configuration](https://docs.defang.io/docs/concepts/configuration). 
+        if response.status_code == 200:
+            result = response.json()
+            if (result.get('candidates') and
+                len(result['candidates']) > 0 and
+                result['candidates'][0].get('content') and
+                result['candidates'][0]['content'].get('parts') and
+                len(result['candidates'][0]['content']['parts']) > 0):
 
-If you wish to provide configuration, see below for an example of setting a configuration for a value named `API_KEY`.
+                ai_response = result['candidates'][0]['content']['parts'][0]['text']
+                messages.append({'role': 'model', 'content': ai_response})
 
-```bash
-defang config set API_KEY
-```
+                return jsonify({
+                    'response': ai_response,
+                    'success': True
+                })
+            else:
+                return jsonify({'error': 'Invalid API response structure'}), 500
+        else:
+            return jsonify({'error': f'API error: {response.status_code}'}), 500
 
-## Deployment
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-> [!NOTE]
-> Download [Defang CLI](https://github.com/DefangLabs/defang)
+@app.route('/api/messages')
+def get_messages():
+    return jsonify(messages)
 
-### Defang Playground
+@app.route('/api/clear', methods=['POST'])
+def clear_messages():
+    global messages
+    messages = []    
+    return jsonify({'success': True})
 
-Deploy your application to the Defang Playground by opening up your terminal and typing:
-```bash
-defang compose up
-```
-
-### BYOC (AWS)
-
-If you want to deploy to your own cloud account, you can use Defang BYOC:
-
-1. [Authenticate your AWS account](https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-configure.html), and check that you have properly set your environment variables like `AWS_PROFILE`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY`.
-2. Make sure to update the `CSRF_TRUSTED_ORIGINS` setting in the `settings.py` file to include an appropriate domain.
-3. Run in a terminal that has access to your AWS environment variables:
-    ```bash
-    defang --provider=aws compose up
-    ```
-
----
-
-Title: Django
-
-Short Description: A simple Django app that uses SQLite as the database.
-
-Tags: Django, SQLite, Python
-
-Languages: python
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
